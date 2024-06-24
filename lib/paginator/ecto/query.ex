@@ -20,25 +20,26 @@ defmodule Paginator.Ecto.Query do
   end
 
   # This clause is responsible for transforming legacy list cursors into map cursors
-  defp filter_values(query, fields, values, cursor_direction) when is_list(values) do
+  defp filter_values(query, fields, values, query_fields, cursor_direction)
+       when is_list(values) do
     new_values =
       fields
       |> Enum.map(&elem(&1, 0))
       |> Enum.zip(values)
       |> Map.new()
 
-    filter_values(query, fields, new_values, cursor_direction)
+    filter_values(query, fields, new_values, query_fields, cursor_direction)
   end
 
-  defp filter_values(query, fields, values, cursor_direction) when is_map(values) do
-    filters = build_where_expression(query, fields, values, cursor_direction)
+  defp filter_values(query, fields, values, query_fields, cursor_direction) when is_map(values) do
+    filters = build_where_expression(query, fields, values, query_fields, cursor_direction)
 
     where(query, [{q, 0}], ^filters)
   end
 
-  defp build_where_expression(query, [{column, order}], values, cursor_direction) do
+  defp build_where_expression(query, [{column, order}], values, query_fields, cursor_direction) do
     value = Map.get(values, column)
-    {q_position, q_binding} = column_position(query, column)
+    {q_position, q_binding} = column_position(query, column, query_fields)
 
     DynamicFilterBuilder.build!(%{
       sort_order: order,
@@ -50,11 +51,17 @@ defmodule Paginator.Ecto.Query do
     })
   end
 
-  defp build_where_expression(query, [{column, order} | fields], values, cursor_direction) do
+  defp build_where_expression(
+         query,
+         [{column, order} | fields],
+         values,
+         query_fields,
+         cursor_direction
+       ) do
     value = Map.get(values, column)
-    {q_position, q_binding} = column_position(query, column)
+    {q_position, q_binding} = column_position(query, column, query_fields)
 
-    filters = build_where_expression(query, fields, values, cursor_direction)
+    filters = build_where_expression(query, fields, values, query_fields, cursor_direction)
 
     DynamicFilterBuilder.build!(%{
       sort_order: order,
@@ -76,34 +83,37 @@ defmodule Paginator.Ecto.Query do
   defp maybe_where(query, %Config{
          after_values: after_values,
          before: nil,
-         cursor_fields: cursor_fields
+         cursor_fields: cursor_fields,
+         query_field_for_cursor_field: query_field_for_cursor_field
        }) do
     query
-    |> filter_values(cursor_fields, after_values, :after)
+    |> filter_values(cursor_fields, after_values, query_field_for_cursor_field, :after)
   end
 
   defp maybe_where(query, %Config{
          after: nil,
          before_values: before_values,
-         cursor_fields: cursor_fields
+         cursor_fields: cursor_fields,
+         query_field_for_cursor_field: query_field_for_cursor_field
        }) do
     query
-    |> filter_values(cursor_fields, before_values, :before)
+    |> filter_values(cursor_fields, before_values, query_field_for_cursor_field, :before)
     |> reverse_order_bys()
   end
 
   defp maybe_where(query, %Config{
          after_values: after_values,
          before_values: before_values,
-         cursor_fields: cursor_fields
+         cursor_fields: cursor_fields,
+         query_field_for_cursor_field: query_field_for_cursor_field
        }) do
     query
-    |> filter_values(cursor_fields, after_values, :after)
-    |> filter_values(cursor_fields, before_values, :before)
+    |> filter_values(cursor_fields, after_values, query_field_for_cursor_field, :after)
+    |> filter_values(cursor_fields, before_values, query_field_for_cursor_field, :before)
   end
 
   # Lookup position of binding in query aliases
-  defp column_position(query, {binding_name, column}) do
+  defp column_position(query, {binding_name, column}, _) do
     case Map.fetch(query.aliases, binding_name) do
       {:ok, position} ->
         {position, column}
@@ -116,8 +126,18 @@ defmodule Paginator.Ecto.Query do
     end
   end
 
+  defp column_position(query, column, query_fields)
+       when is_atom(column) and is_map(query_fields) do
+    with {:ok, {alias_binding, target_column}} <- Map.fetch(query_fields, column),
+         {:ok, position} <- Map.fetch(query.aliases, alias_binding) do
+      {position, target_column}
+    else
+      _ -> {0, column}
+    end
+  end
+
   # Without named binding we assume position of binding is 0
-  defp column_position(_query, column), do: {0, column}
+  defp column_position(_query, column, _), do: {0, column}
 
   #  In order to return the correct pagination cursors, we need to fetch one more
   # # record than we actually want to return.
