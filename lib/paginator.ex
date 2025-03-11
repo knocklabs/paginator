@@ -173,18 +173,22 @@ defmodule Paginator do
   @doc false
   def paginate(queryable, opts, repo, repo_opts) do
     config = Config.new(opts)
-
     Config.validate!(config)
 
-    sorted_entries = entries(queryable, config, repo, repo_opts)
+    {sorted_entries, post_query_config} = entries(queryable, config, repo, repo_opts)
     paginated_entries = paginate_entries(sorted_entries, config)
     {total_count, total_count_cap_exceeded} = total_count(queryable, config, repo, repo_opts)
+
+    # Build the before + after cursors for the page. The config returned by `entries/4` may
+    # have updated metadata from the pagination action we need to build these cursors.
+    before_val = before_cursor(paginated_entries, sorted_entries, post_query_config)
+    after_val = after_cursor(paginated_entries, sorted_entries, post_query_config, before_val)
 
     %Page{
       entries: paginated_entries,
       metadata: %Metadata{
-        before: before_cursor(paginated_entries, sorted_entries, config),
-        after: after_cursor(paginated_entries, sorted_entries, config),
+        before: Cursor.encode(before_val),
+        after: Cursor.encode(after_val),
         limit: config.limit,
         total_count: total_count,
         total_count_cap_exceeded: total_count_cap_exceeded
@@ -261,15 +265,20 @@ defmodule Paginator do
 
   defp before_cursor(paginated_entries, _sorted_entries, %Config{after: c_after} = config)
        when not is_nil(c_after) do
-    first_or_nil(paginated_entries, config)
+    paginated_entries
+    |> first_or_nil(config)
+    |> before_cursor_value(config)
   end
 
   defp before_cursor(paginated_entries, sorted_entries, config) do
-    if first_page?(sorted_entries, config) do
-      nil
-    else
-      first_or_nil(paginated_entries, config)
-    end
+    cursor_val =
+      if first_page?(sorted_entries, config) do
+        nil
+      else
+        first_or_nil(paginated_entries, config)
+      end
+
+    before_cursor_value(cursor_val, config)
   end
 
   defp first_or_nil(entries, config) do
@@ -280,19 +289,50 @@ defmodule Paginator do
     end
   end
 
-  defp after_cursor([], [], _config), do: nil
+  defp before_cursor_value(nil, _), do: nil
+  defp before_cursor_value(cursor_val, %Config{use_seeking_cursors: false}), do: cursor_val
 
-  defp after_cursor(paginated_entries, _sorted_entries, %Config{before: c_before} = config)
-       when not is_nil(c_before) do
-    last_or_nil(paginated_entries, config)
+  defp before_cursor_value(cursor_val, %Config{after_values: %{acc: acc}}) do
+    %{cursor: cursor_val, acc: acc}
   end
 
-  defp after_cursor(paginated_entries, sorted_entries, config) do
-    if last_page?(sorted_entries, config) do
-      nil
-    else
-      last_or_nil(paginated_entries, config)
+  defp before_cursor_value(cursor_val, %Config{before_values: before_values}) do
+    case before_values do
+      %{acc: %{before: %{acc: prev_acc}}} -> %{cursor: cursor_val, acc: prev_acc}
+      _ -> %{cursor: cursor_val, acc: nil}
     end
+  end
+
+  defp after_cursor([], [], _config, _), do: nil
+
+  defp after_cursor(
+         paginated_entries,
+         _sorted_entries,
+         %Config{before: c_before} = config,
+         before_cursor
+       )
+       when not is_nil(c_before) do
+    paginated_entries
+    |> last_or_nil(config)
+    |> after_cursor_value(config, before_cursor)
+  end
+
+  defp after_cursor(paginated_entries, sorted_entries, config, before_cursor) do
+    cursor_val =
+      if last_page?(sorted_entries, config) do
+        nil
+      else
+        last_or_nil(paginated_entries, config)
+      end
+
+    after_cursor_value(cursor_val, config, before_cursor)
+  end
+
+  defp after_cursor_value(nil, _, _), do: nil
+  defp after_cursor_value(cursor_val, %Config{use_seeking_cursors: false}, _), do: cursor_val
+
+  defp after_cursor_value(cursor_val, _, before_cursor) do
+    %{cursor: cursor_val, acc: %{before: before_cursor}}
   end
 
   defp last_or_nil(entries, config) do
@@ -316,7 +356,13 @@ defmodule Paginator do
         {cursor_field, fetch_cursor_value_fun.(schema, cursor_field)}
     end)
     |> Map.new()
-    |> Cursor.encode()
+  end
+
+  defp first_page?(_, %Config{use_seeking_cursors: true, before_values: before_values}) do
+    case before_values do
+      %{acc: %{before: nil}} -> true
+      _ -> false
+    end
   end
 
   defp first_page?(sorted_entries, %Config{limit: limit}) do
@@ -327,7 +373,69 @@ defmodule Paginator do
     Enum.count(sorted_entries) <= limit
   end
 
+  defp entries(
+         queryable,
+         %Config{use_seeking_cursors: true, after: nil, before_values: %{cursor: _, acc: _}} =
+           config,
+         repo,
+         repo_opts
+       ) do
+    # When using a seeking style cursor for an unbounded backwards pagination,
+    # we recursively seek thru previous query pages to fill the results until
+    # either we hit the page size limit or hit the top of the page.
+    #
+    # A simpler approach for this type of pagination action is to invert the
+    # query to get the previous page. This is the default behavior for this library.
+    # But, inverting queries can become expensive in certain instances. So this
+    # more complex alternative is made available.
+    seek_and_fill_entries([], queryable, config, repo, repo_opts)
+  end
+
   defp entries(queryable, config, repo, repo_opts) do
+    {execute_entries_query(queryable, config, repo, repo_opts), config}
+  end
+
+  defp seek_and_fill_entries(
+         entries,
+         queryable,
+         %Config{before_values: %{acc: %{before: nil}}} = config,
+         repo,
+         repo_opts
+       ) do
+    new_entries = execute_entries_query(queryable, config, repo, repo_opts)
+
+    {new_entries ++ entries, config}
+  end
+
+  defp seek_and_fill_entries(
+         entries,
+         queryable,
+         %Config{before_values: %{acc: %{before: prev_before_values}}} = config,
+         repo,
+         repo_opts
+       ) do
+    case execute_entries_query(queryable, config, repo, repo_opts) do
+      [] ->
+        {entries, config}
+
+      new_entries ->
+        entries = new_entries ++ entries
+
+        if length(entries) >= config.limit do
+          {entries, config}
+        else
+          seek_and_fill_entries(
+            entries,
+            queryable,
+            %{config | before_values: prev_before_values},
+            repo,
+            repo_opts
+          )
+        end
+    end
+  end
+
+  defp execute_entries_query(queryable, config, repo, repo_opts) do
     queryable
     |> Query.paginate(config)
     |> repo.all(repo_opts)
@@ -389,11 +497,26 @@ defmodule Paginator do
   #
   # When we have only a before cursor, we get our results from
   # sorted_entries in reverse order due t
-  defp paginate_entries(sorted_entries, %Config{before: before, after: nil, limit: limit})
-       when not is_nil(before) do
-    sorted_entries
-    |> Enum.take(limit)
-    |> Enum.reverse()
+  defp paginate_entries(
+         sorted_entries,
+         %Config{
+           before_values: before_values,
+           after: nil,
+           limit: limit
+         }
+       ) do
+    case before_values do
+      %{cursor: _, acc: _} ->
+        Enum.take(sorted_entries, limit)
+
+      b when not is_nil(b) ->
+        sorted_entries
+        |> Enum.take(limit)
+        |> Enum.reverse()
+
+      _ ->
+        Enum.take(sorted_entries, limit)
+    end
   end
 
   defp paginate_entries(sorted_entries, %Config{limit: limit}) do

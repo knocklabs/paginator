@@ -47,11 +47,23 @@ defmodule Paginator.Ecto.Query.DescNullsFirst do
     dynamic([{query, args.entity_position}], field(query, ^args.column) < ^args.value)
   end
 
+  def build_dynamic_filter(args = %{direction: :after_inclusive, next_filters: true}) do
+    dynamic([{query, args.entity_position}], field(query, ^args.column) <= ^args.value)
+  end
+
   def build_dynamic_filter(args = %{direction: :after}) do
     dynamic(
       [{query, args.entity_position}],
       (field(query, ^args.column) == ^args.value and ^args.next_filters) or
         field(query, ^args.column) < ^args.value
+    )
+  end
+
+  def build_dynamic_filter(args = %{direction: :after_inclusive}) do
+    dynamic(
+      [{query, args.entity_position}],
+      (field(query, ^args.column) == ^args.value and ^args.next_filters) or
+        field(query, ^args.column) <= ^args.value
     )
   end
 end

@@ -38,7 +38,7 @@ defmodule Paginator.Ecto.Query do
   end
 
   defp build_where_expression(query, [{column, order}], values, query_fields, cursor_direction) do
-    value = Map.get(values, column)
+    value = get_cursor_value(values, column)
     {q_position, q_binding} = column_position(query, column, query_fields)
 
     DynamicFilterBuilder.build!(%{
@@ -58,7 +58,7 @@ defmodule Paginator.Ecto.Query do
          query_fields,
          cursor_direction
        ) do
-    value = Map.get(values, column)
+    value = get_cursor_value(values, column)
     {q_position, q_binding} = column_position(query, column, query_fields)
 
     filters = build_where_expression(query, fields, values, query_fields, cursor_direction)
@@ -71,6 +71,14 @@ defmodule Paginator.Ecto.Query do
       column: q_binding,
       next_filters: filters
     })
+  end
+
+  defp get_cursor_value(cursor_values, column) do
+    case cursor_values do
+      %{cursor: %{^column => val}} -> val
+      %{^column => val} -> val
+      _ -> nil
+    end
   end
 
   defp maybe_where(query, %Config{
@@ -90,15 +98,35 @@ defmodule Paginator.Ecto.Query do
     |> filter_values(cursor_fields, after_values, query_field_for_cursor_field, :after)
   end
 
-  defp maybe_where(query, %Config{
-         after: nil,
-         before_values: before_values,
-         cursor_fields: cursor_fields,
-         query_field_for_cursor_field: query_field_for_cursor_field
-       }) do
-    query
-    |> filter_values(cursor_fields, before_values, query_field_for_cursor_field, :before)
-    |> reverse_order_bys()
+  defp maybe_where(
+         query,
+         %Config{
+           after: nil,
+           before_values: before_values,
+           cursor_fields: cursor_fields,
+           use_seeking_cursors: use_seeking_cursors,
+           query_field_for_cursor_field: query_field_for_cursor_field
+         } = config
+       ) do
+    case {use_seeking_cursors, before_values} do
+      # When using a complex seeking cursor, we provide an inclusive upper-bound on the
+      # query so we do not need to invert the sort order to get the most recent N values
+      # before a given cursor. We use the accumulated previous before-point as the upper-bound.
+      {true, %{cursor: before_values, acc: %{before: %{cursor: prev_before_values}}}} ->
+        query
+        |> filter_values(
+          cursor_fields,
+          prev_before_values,
+          query_field_for_cursor_field,
+          :after_inclusive
+        )
+        |> filter_values(cursor_fields, before_values, query_field_for_cursor_field, :before)
+
+      {_, before_values} ->
+        query
+        |> filter_values(cursor_fields, before_values, query_field_for_cursor_field, :before)
+        |> maybe_reverse_order_bys(config)
+    end
   end
 
   defp maybe_where(query, %Config{
@@ -145,8 +173,20 @@ defmodule Paginator.Ecto.Query do
     limit + 1
   end
 
+  # When using a seeking style cursor for a query, we don't invert the sort
+  # order for an unbounded backwards pagination action
+  defp maybe_reverse_order_bys(
+         query,
+         %Config{
+           use_seeking_cursors: true,
+           before_values: %{cursor: _, acc: _}
+         }
+       ) do
+    query
+  end
+
   # This code was taken from https://github.com/elixir-ecto/ecto/blob/v2.1.4/lib/ecto/query.ex#L1212-L1226
-  defp reverse_order_bys(query) do
+  defp maybe_reverse_order_bys(query, _) do
     update_in(query.order_bys, fn
       [] ->
         []

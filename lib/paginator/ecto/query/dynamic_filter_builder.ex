@@ -9,7 +9,7 @@ defmodule Paginator.Ecto.Query.DynamicFilterBuilder do
   }
 
   @callback build_dynamic_filter(%{
-              direction: :after | :before,
+              direction: :after | :after_inclusive | :before,
               entity_position: integer(),
               column: term(),
               value: term(),

@@ -18,7 +18,8 @@ defmodule Paginator.Config do
     :maximum_limit,
     :sort_direction,
     :total_count_limit,
-    :query_field_for_cursor_field
+    :query_field_for_cursor_field,
+    :use_seeking_cursors
   ]
 
   defmodule ArgumentError do
@@ -54,7 +55,8 @@ defmodule Paginator.Config do
       limit: limit(opts),
       sort_direction: opts[:sort_direction],
       total_count_limit: opts[:total_count_limit] || @default_total_count_limit,
-      query_field_for_cursor_field: opts[:query_field_for_cursor_field]
+      query_field_for_cursor_field: opts[:query_field_for_cursor_field],
+      use_seeking_cursors: opts[:use_seeking_cursors] || false
     }
     |> convert_deprecated_config()
   end
@@ -83,6 +85,10 @@ defmodule Paginator.Config do
        when is_list(cursor_values) do
     # Legacy cursors are valid by default
     true
+  end
+
+  defp cursor_values_match_cursor_fields?(%{cursor: cursor_values}, cursor_fields) do
+    cursor_values_match_cursor_fields?(cursor_values, cursor_fields)
   end
 
   defp cursor_values_match_cursor_fields?(cursor_values, cursor_fields) do
