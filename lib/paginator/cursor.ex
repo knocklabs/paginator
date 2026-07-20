@@ -11,7 +11,7 @@ defmodule Paginator.Cursor do
 
   def encode(values) when is_map(values) do
     values
-    |> :erlang.term_to_binary()
+    |> :erlang.term_to_binary([:deterministic])
     |> Base.url_encode64()
   end
 end
