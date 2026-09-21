@@ -19,7 +19,7 @@ defmodule Paginator.Ecto.Query.DynamicFilterBuilder do
   @type sort_order ::
           :asc
           | :asc_nulls_first
-          | :asc_nulls_desc
+          | :asc_nulls_last
           | :desc
           | :desc_nulls_first
           | :desc_nulls_last
@@ -37,14 +37,17 @@ defmodule Paginator.Ecto.Query.DynamicFilterBuilder do
   def build!(input) do
     case Map.fetch(@dispatch_table, input.sort_order) do
       {:ok, module} ->
-        apply(module, :build_dynamic_filter, [input])
+        if Map.get(input, :non_null, false) do
+          Paginator.Ecto.Query.NonNull.build_dynamic_filter(input)
+        else
+          apply(module, :build_dynamic_filter, [input])
+        end
 
       :error ->
-        direction = input.direction
         available_sort_orders = Map.keys(@dispatch_table) |> Enum.join(", ")
 
         raise(
-          "Invalid sorting value :#{direction}, please please use either #{available_sort_orders}"
+          "Invalid sorting value #{inspect(input.sort_order)}, please use either #{available_sort_orders}"
         )
     end
   end

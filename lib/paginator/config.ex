@@ -17,7 +17,8 @@ defmodule Paginator.Config do
     :limit,
     :maximum_limit,
     :sort_direction,
-    :total_count_limit
+    :total_count_limit,
+    non_null_fields: []
   ]
 
   defmodule ArgumentError do
@@ -45,6 +46,7 @@ defmodule Paginator.Config do
       before: opts[:before],
       before_values: Cursor.decode(opts[:before]),
       cursor_fields: opts[:cursor_fields],
+      non_null_fields: Keyword.get(opts, :non_null_fields, []),
       fetch_cursor_value_fun:
         opts[:fetch_cursor_value_fun] || (&Paginator.default_fetch_cursor_value/2),
       include_total_count: opts[:include_total_count] || false,
@@ -62,6 +64,15 @@ defmodule Paginator.Config do
       raise(Paginator.Config.ArgumentError, message: "expected `:cursor_fields` to be set")
     end
 
+    fields = Enum.map(config.cursor_fields, &cursor_field_key/1)
+
+    unless is_list(config.non_null_fields) and
+             Enum.all?(config.non_null_fields, &(&1 in fields)) do
+      raise(Paginator.Config.ArgumentError,
+        message: "expected `:non_null_fields` to be a list of cursor fields"
+      )
+    end
+
     if !cursor_values_match_cursor_fields?(config.after_values, config.cursor_fields) do
       raise(Paginator.Config.ArgumentError,
         message: "expected `:after` cursor to match `:cursor_fields`"
@@ -74,6 +85,13 @@ defmodule Paginator.Config do
       )
     end
   end
+
+  @doc false
+  @spec cursor_field_key(tuple()) :: atom() | {atom(), atom()}
+  def cursor_field_key({{field, handler}, _order}) when is_atom(field) and is_function(handler),
+    do: field
+
+  def cursor_field_key({field, _order}), do: field
 
   defp cursor_values_match_cursor_fields?(nil = _cursor_values, _cursor_fields), do: true
 
@@ -88,27 +106,7 @@ defmodule Paginator.Config do
 
     sorted_cursor_fields =
       cursor_fields
-      |> Enum.map(fn
-        {field, value} when is_atom(field) and value in @order_directions ->
-          field
-
-        {{schema, field}, value}
-        when is_atom(schema) and is_atom(field) and value in @order_directions ->
-          {schema, field}
-
-        {{field, func}, value}
-        when is_function(func) and is_atom(field) and value in @order_directions ->
-          field
-
-        {field, func} when is_function(func) and is_atom(field) ->
-          field
-
-        field when is_atom(field) ->
-          field
-
-        {schema, field} when is_atom(schema) and is_atom(field) ->
-          {schema, field}
-      end)
+      |> Enum.map(&cursor_field_key/1)
       |> Enum.sort()
 
     match?(^cursor_keys, sorted_cursor_fields)
