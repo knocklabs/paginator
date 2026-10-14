@@ -72,6 +72,13 @@ defmodule Paginator do
     * `:cursor_fields` - The fields with sorting direction used to determine the
     cursor. In most cases, this should be the same fields as the ones used for sorting in the query.
     When you use named bindings in your query they can also be provided.
+    * `:non_null_fields` - Cursor fields guaranteed to contain no null values. Defaults
+    to `[]`. Omits null-handling branches from their cursor predicates, which can
+    allow tighter index bounds. Only opt in when the column or expression is guaranteed
+    non-null. This option does not add a filter without a cursor; with a cursor, strict
+    comparisons exclude SQL NULL values and nil cursor values raise
+    `Paginator.Config.ArgumentError`. Use atom names for columns and expressions,
+    or `{binding, column}` for named bindings. Cursor encoding and total counts are unchanged.
     * `:fetch_cursor_value_fun` function of arity 2 to lookup cursor values on returned records.
     Defaults to `Paginator.default_fetch_cursor_value/2`
     * `:include_total_count` - Set this to true to return the total number of

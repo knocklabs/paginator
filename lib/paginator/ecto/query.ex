@@ -20,28 +20,37 @@ defmodule Paginator.Ecto.Query do
   end
 
   # This clause is responsible for transforming legacy list cursors into map cursors
-  defp filter_values(query, fields, values, cursor_direction) when is_list(values) do
+  defp filter_values(query, fields, values, cursor_direction, non_null_fields)
+       when is_list(values) do
     new_values =
       fields
-      |> Enum.map(&elem(&1, 0))
+      |> Enum.map(&Config.cursor_field_key/1)
       |> Enum.zip(values)
       |> Map.new()
 
-    filter_values(query, fields, new_values, cursor_direction)
+    filter_values(query, fields, new_values, cursor_direction, non_null_fields)
   end
 
-  defp filter_values(query, fields, values, cursor_direction) when is_map(values) do
-    filters = build_where_expression(query, fields, values, cursor_direction)
+  defp filter_values(query, fields, values, cursor_direction, non_null_fields)
+       when is_map(values) do
+    filters = build_where_expression(query, fields, values, cursor_direction, non_null_fields)
 
     where(query, [{q, 0}], ^filters)
   end
 
-  defp build_where_expression(query, [{field, order} = column], values, cursor_direction) do
+  defp build_where_expression(
+         query,
+         [{field, order} = column],
+         values,
+         cursor_direction,
+         non_null_fields
+       ) do
     value = column_value(column, values)
     {q_position, q_binding} = column_position(query, field)
 
     DynamicFilterBuilder.build!(%{
       sort_order: order,
+      non_null: Config.cursor_field_key(column) in non_null_fields,
       direction: cursor_direction,
       value: value,
       entity_position: q_position,
@@ -50,14 +59,21 @@ defmodule Paginator.Ecto.Query do
     })
   end
 
-  defp build_where_expression(query, [{field, order} = column | fields], values, cursor_direction) do
+  defp build_where_expression(
+         query,
+         [{field, order} = column | fields],
+         values,
+         cursor_direction,
+         non_null_fields
+       ) do
     value = column_value(column, values)
     {q_position, q_binding} = column_position(query, field)
 
-    filters = build_where_expression(query, fields, values, cursor_direction)
+    filters = build_where_expression(query, fields, values, cursor_direction, non_null_fields)
 
     DynamicFilterBuilder.build!(%{
       sort_order: order,
+      non_null: Config.cursor_field_key(column) in non_null_fields,
       direction: cursor_direction,
       value: value,
       entity_position: q_position,
@@ -66,12 +82,8 @@ defmodule Paginator.Ecto.Query do
     })
   end
 
-  defp column_value({{field, func}, _order}, values) when is_function(func) and is_atom(field) do
-    Map.get(values, field)
-  end
-
-  defp column_value({column, _order}, values) do
-    Map.get(values, column)
+  defp column_value(column, values) do
+    Map.get(values, Config.cursor_field_key(column))
   end
 
   defp maybe_where(query, %Config{
@@ -84,30 +96,33 @@ defmodule Paginator.Ecto.Query do
   defp maybe_where(query, %Config{
          after_values: after_values,
          before: nil,
-         cursor_fields: cursor_fields
+         cursor_fields: cursor_fields,
+         non_null_fields: non_null_fields
        }) do
     query
-    |> filter_values(cursor_fields, after_values, :after)
+    |> filter_values(cursor_fields, after_values, :after, non_null_fields)
   end
 
   defp maybe_where(query, %Config{
          after: nil,
          before_values: before_values,
-         cursor_fields: cursor_fields
+         cursor_fields: cursor_fields,
+         non_null_fields: non_null_fields
        }) do
     query
-    |> filter_values(cursor_fields, before_values, :before)
+    |> filter_values(cursor_fields, before_values, :before, non_null_fields)
     |> reverse_order_bys()
   end
 
   defp maybe_where(query, %Config{
          after_values: after_values,
          before_values: before_values,
-         cursor_fields: cursor_fields
+         cursor_fields: cursor_fields,
+         non_null_fields: non_null_fields
        }) do
     query
-    |> filter_values(cursor_fields, after_values, :after)
-    |> filter_values(cursor_fields, before_values, :before)
+    |> filter_values(cursor_fields, after_values, :after, non_null_fields)
+    |> filter_values(cursor_fields, before_values, :before, non_null_fields)
   end
 
   # With custom column handler
